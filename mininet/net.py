@@ -450,7 +450,6 @@ class Mininet(object):
 
         wlan = ("%s" % params.pop('phywlan', {}))
         bs.params['phywlan'] = wlan
-        self.switches.append(bs)
         self.aps.append(bs)
 
         mininetWiFi.addParameters(bs, self.autoSetMacs, defaults, mode='master')
@@ -662,27 +661,36 @@ class Mininet(object):
                  and ('ssid' in node1.params and 'apsInRange' in node2.params)))
             and 'link' not in options):
 
+            sta_intf = None
+            ap_intf = 0
             if (isinstance(node1, Station) or isinstance(node1, Car)) \
                     and 'ssid' in node2.params:
                 sta = node1
                 ap = node2
+                if port1:
+                    sta_intf = port1
+                if port2:
+                    ap_intf = port2
             else:
                 sta = node2
                 ap = node1
+                if port2:
+                    sta_intf = port2
+                if port1:
+                    ap_intf = port1
 
-            if 'intf' in params:
-                for intf_ in sta.params['wlan']:
-                    if params['intf'] == intf_:
-                        wlan = sta.params['wlan'].index(intf_)
+            if sta_intf:
+                sta_wlan = sta_intf
             else:
-                wlan = sta.ifaceToAssociate
+                sta_wlan = sta.ifaceToAssociate
+            ap_wlan = ap_intf
 
-            sta.params['mode'][wlan] = ap.params['mode'][0]
-            sta.params['channel'][wlan] = ap.params['channel'][0]
+            sta.params['mode'][sta_wlan] = ap.params['mode'][ap_wlan]
+            sta.params['channel'][sta_wlan] = ap.params['channel'][ap_wlan]
 
             # If sta/ap have defined position
             if 'position' in sta.params and 'position' in ap.params:
-                dist = mininetWiFi.getDistance(sta, ap)
+                dist = sta.get_distance_to(ap)
                 if dist > ap.params['range'][0]:
                     doAssociation = False
                 else:
@@ -699,10 +707,10 @@ class Mininet(object):
                     wmediumd_mode = None
                 cls = Association
                 cls.associate(sta, ap, self.enable_wmediumd,
-                              wmediumd_mode)
+                              wmediumd_mode, sta_wlan, ap_wlan)
                 if 'bw' not in params and 'mininet.util.TCIntfWireless' \
                         not in str(self.link):
-                    value = mininetWiFi.setDataRate(sta, ap, wlan)
+                    value = mininetWiFi.setDataRate(sta, ap, sta_wlan)
                     bw = value.rate
                     params['bw'] = bw
 
@@ -716,7 +724,7 @@ class Mininet(object):
                     and 'position' not in sta.params:
                     # tc = True, this is useful only to apply tc configuration
                     if not mininetWiFi.enable_interference:
-                        cls(name=sta.params['wlan'][wlan], node=sta,
+                        cls(name=sta.params['wlan'][sta_wlan], node=sta,
                             link=None, tc=True, **params)
             if self.enable_wmediumd:
                 if self.enable_error_prob:
@@ -735,7 +743,7 @@ class Mininet(object):
                 cls = _4addrLink
                 cls(node1, node2)
             else:
-                dist = mininetWiFi.getDistance(node1, node2)
+                dist = node1.get_distance_to(node2)
                 if dist > node1.params['range'][0]:
                     doAssociation = False
                 else:
@@ -911,8 +919,11 @@ class Mininet(object):
         if self.autoStaticArp:
             self.staticArp()
 
+        isPosDefined = False
         nodes = self.stations
         for node in nodes:
+            if 'position' in node.params:
+                isPosDefined = True
             for wlan in range(0, len(node.params['wlan'])):
                 if not isinstance(node, AP) and node.func[0] != 'ap' and \
                     node.func[wlan] != 'mesh' and node.func[wlan] != 'adhoc' \
@@ -927,6 +938,7 @@ class Mininet(object):
 
         if self.isMobility:
             if self.isMobilityModel or mininetWiFi.isVanet:
+                self.mobilityKwargs['mobileNodes'] = self.getMobileNodes()
                 mininetWiFi.start_mobility(**self.mobilityKwargs)
             else:
                 self.mobilityKwargs['plotNodes'] = self.plot_nodes()
@@ -942,7 +954,7 @@ class Mininet(object):
             thread.start()
         else:
             if not self.isMobility and mininetWiFi.DRAW \
-                    and not mininetWiFi.alreadyPlotted:
+                    and not mininetWiFi.alreadyPlotted and isPosDefined:
                 plotNodes = self.plot_nodes()
                 self.stations, self.aps = \
                     mininetWiFi.plotCheck(self.stations, self.aps,
@@ -1382,6 +1394,27 @@ class Mininet(object):
         output('*** Results: %s\n' % cpu_fractions)
         return cpu_fractions
 
+    def get_distance(self, src, dst):
+        """Gets the distance between two nodes
+
+        :params src: source node
+        :params dst: destination node
+        :params nodes: list of nodes"""
+        nodes = self.stations + self.cars + self.aps
+        try:
+            for host1 in nodes:
+                if src == str(host1):
+                    src = host1
+                    for host2 in nodes:
+                        if dst == str(host2):
+                            dst = host2
+                            dist = src.get_distance_to(dst)
+                            info("The distance between %s and %s is %.2f "
+                                 "meters\n" % (src, dst, float(dist)))
+        except:
+            info("node %s or/and node %s does not exist or there is no " \
+            "position defined" % (dst, src))
+
     @classmethod
     def mobility(cls, *args, **kwargs):
         "Configure mobility parameters"
@@ -1394,6 +1427,7 @@ class Mininet(object):
             self.repetitions = kwargs['repetitions']
         if 'model' in kwargs:
             self.isMobilityModel = True
+            kwargs['mobileNodes'] = self.getMobileNodes()
         self.mobilityKwargs = kwargs
         kwargs['stations'] = self.stations
         kwargs['aps'] = self.aps
@@ -1403,6 +1437,14 @@ class Mininet(object):
         """Stops Mobility"""
         self.mobilityKwargs.update(kwargs)
         mininetWiFi.setMobilityParams(**kwargs)
+
+    def getMobileNodes(self):
+        mobileNodes = []
+        nodes = self.stations + self.aps + self.cars
+        for node in nodes:
+            if 'position' not in node.params:
+                mobileNodes.append(node)
+        return mobileNodes
 
     def useExternalProgram(self, program, **params):
         """
@@ -1448,16 +1490,6 @@ class Mininet(object):
 
     def start_simulation(self):
         mininetWiFi.start_simulation()
-
-    def getCurrentDistance(self, src, dst):
-        """ 
-        Gets the distance between two nodes
-        
-        :params src: source node
-        :params dst: destination node
-        """
-        nodes = self.stations + self.cars + self.aps
-        mininetWiFi.printDistance(src, dst, nodes)
 
     @classmethod
     def plotGraph(cls, min_x=0, min_y=0, min_z=0, max_x=0, max_y=0, max_z=0):

@@ -2,8 +2,6 @@
 author: Ramon Fontes (ramonrf@dca.fee.unicamp.br)
 """
 import os
-import numpy as np
-from scipy.spatial.distance import pdist
 
 from mininet.wifiDevices import deviceDataRate
 from mininet.log import debug, info
@@ -20,7 +18,7 @@ class wirelessLink (object):
     equationBw = ' * (1.01 ** -dist)'
     ifb = False
 
-    def __init__(self, sta=None, ap=None, wlan=0, dist=0):
+    def __init__(self, sta=None, ap=None, wlan=0, ap_wlan=0, dist=0):
         """"
         :param sta: station
         :param ap: access point
@@ -33,19 +31,6 @@ class wirelessLink (object):
         loss_ = self.setLoss(dist)
         bw_ = self.setBW(sta=sta, ap=ap, dist=dist, wlan=wlan)
         self.tc(sta, wlan, bw_, loss_, latency_, delay_)
-
-    @classmethod
-    def getDistance(cls, src, dst):
-        """ Get the distance between two nodes
-        
-        :param src: source node
-        :param dst: destination node
-        """
-        pos_src = src.params['position']
-        pos_dst = dst.params['position']
-        points = np.array([(pos_src[0], pos_src[1], pos_src[2]),
-                           (pos_dst[0], pos_dst[1], pos_dst[2])])
-        return float(pdist(points))
 
     @classmethod
     def setDelay(cls, dist):
@@ -164,28 +149,27 @@ class Association(object):
             ap.wmIface[0], sta.wmIface[0], snr))
 
     @classmethod
-    def configureWirelessLink(cls, sta, ap, enable_wmediumd=False,
-                              wmediumd_mode=False):
+    def configureWirelessLink(cls, sta, ap, enable_wmediumd=False, wmediumd_mode=False,
+                              ap_wlan=0):
         """ 
         Updates RSSI and Others...
         
         :param sta: station
         :param ap: access point
-        :param wlan: wlan ID
         """
 
-        dist = wirelessLink.getDistance(sta, ap)
+        dist = sta.get_distance_to(ap)
         if dist <= ap.params['range'][0]:
             for wlan in range(0, len(sta.params['wlan'])):
                 if wmediumd_mode is not 'interference':
                     if sta.params['rssi'][wlan] == 0:
-                        cls.updateParams(sta, ap, wlan)
+                        cls.updateParams(sta, ap, wlan, ap_wlan)
                 if sta.params['associatedTo'][wlan] == '' \
                         and ap not in sta.params['associatedTo']:
-                    Association.associate_infra(sta, ap, wlan)
+                    Association.associate_infra(sta, ap, wlan, ap_wlan)
                     if not enable_wmediumd:
                         if dist >= 0.01:
-                            wirelessLink(sta, ap, wlan, dist)
+                            wirelessLink(sta, ap, wlan, ap_wlan, dist)
                     if sta not in ap.params['associatedStations']:
                         ap.params['associatedStations'].append(sta)
                 if wmediumd_mode is not 'interference':
@@ -209,20 +193,22 @@ class Association(object):
         sta.params['mode'][wlan] = ap.params['mode'][0]
 
     @classmethod
-    def associate(cls, sta, ap, enable_wmediumd, wmediumd_mode):
-        """ Associate to Access Point """
-        wlan = sta.ifaceToAssociate
+    def associate(cls, sta, ap, enable_wmediumd, wmediumd_mode,
+                  sta_wlan=0, ap_wlan=0):
+        "Associate to Access Point"
+        if sta_wlan == 0:
+            sta_wlan = sta.ifaceToAssociate
         if 'position' in sta.params:
             cls.configureWirelessLink(sta, ap, enable_wmediumd,
-                                      wmediumd_mode)
+                                      wmediumd_mode, ap_wlan)
         else:
-            cls.associate_infra(sta, ap, wlan)
-            sta.params['associatedTo'][wlan] = ap
+            cls.associate_infra(sta, ap, sta_wlan, ap_wlan)
+            sta.params['associatedTo'][sta_wlan] = ap
             ap.params['associatedStations'].append(sta)
         sta.ifaceToAssociate += 1
 
     @classmethod
-    def associate_noEncrypt(cls, sta, ap, wlan):
+    def associate_noEncrypt(cls, sta, ap, sta_wlan, ap_wlan):
         """ 
         Association when there is no encrypt
         
@@ -236,32 +222,32 @@ class Association(object):
         #          % (sta.params['wlan'][wlan], ap.params['ssid'][0], ap.params['mac'][0]))
         #iwconfig is still necessary, since iw doesn't include essid like iwconfig does.
         debug('iwconfig %s essid %s ap %s\n' % (
-            sta.params['wlan'][wlan], ap.params['ssid'][0], ap.params['mac'][0]))
+            sta.params['wlan'][sta_wlan], ap.params['ssid'][ap_wlan],
+            ap.params['mac'][ap_wlan]))
         sta.pexec('iwconfig %s essid %s ap %s' % (
-            sta.params['wlan'][wlan], ap.params['ssid'][0], ap.params['mac'][0]))
+            sta.params['wlan'][sta_wlan], ap.params['ssid'][ap_wlan],
+            ap.params['mac'][ap_wlan]))
 
     @classmethod
-    def associate_infra(cls, sta, ap, wlan):
-        """ 
-        Association when infra
+    def associate_infra(cls, sta, ap, wlan, ap_wlan):
+        """Association when infra
         
         :param sta: station
         :param ap: access point
-        :param wlan: wlan ID
-        """
+        :param wlan: wlan ID"""
         if 'ieee80211r' in ap.params and ap.params['ieee80211r'] == 'yes':
             if sta.params['associatedTo'][wlan] == '':
-                cls.associate_wpa(sta, ap, wlan)
+                cls.associate_wpa(sta, ap, wlan, ap_wlan)
             else:
-                cls.handover_ieee80211r(sta, ap, wlan)
+                cls.handover_ieee80211r(sta, ap, wlan, ap_wlan)
         elif 'encrypt' not in ap.params:
-            cls.associate_noEncrypt(sta, ap, wlan)
+            cls.associate_noEncrypt(sta, ap, wlan, ap_wlan)
         else:
             if sta.params['associatedTo'][wlan] == '':
                 if ap.params['encrypt'][0] == 'wpa' or ap.params['encrypt'][0] == 'wpa2':
-                    cls.associate_wpa(sta, ap, wlan)
+                    cls.associate_wpa(sta, ap, wlan, ap_wlan)
                 elif ap.params['encrypt'][0] == 'wep':
-                    cls.associate_wep(sta, ap, wlan)
+                    cls.associate_wep(sta, ap, wlan, ap_wlan)
         if cls.printCon:
             iface = sta.params['wlan'][wlan]
             info("Associating %s to %s\n" % (iface, ap))
@@ -269,7 +255,7 @@ class Association(object):
         sta.params['associatedTo'][wlan] = ap
 
     @classmethod
-    def wpaFile(cls, sta, ap, wlan):
+    def wpaFile(cls, sta, ap, wlan, ap_wlan):
         """ 
         creates a wpa config file
         
@@ -280,7 +266,7 @@ class Association(object):
         if 'config' not in ap.params or 'config' not in sta.params:
             if 'authmode' not in ap.params:
                 if 'passwd' not in sta.params:
-                    passwd = ap.params['passwd'][0]
+                    passwd = ap.params['passwd'][ap_wlan]
                 else:
                     passwd = sta.params['passwd'][wlan]
 
@@ -294,10 +280,10 @@ class Association(object):
                 for conf in config:
                     cmd = cmd + "   " + conf + "\n"
         else:
-            cmd = cmd + '   ssid=\"%s\"\n' % ap.params['ssid'][0]
+            cmd = cmd + '   ssid=\"%s\"\n' % ap.params['ssid'][ap_wlan]
             if 'authmode' not in ap.params:
                 cmd = cmd + '   psk=\"%s\"\n' % passwd
-                cmd = cmd + '   proto=%s\n' % ap.params['encrypt'][0].upper()
+                cmd = cmd + '   proto=%s\n' % ap.params['encrypt'][ap_wlan].upper()
                 cmd = cmd + '   pairwise=%s\n' % ap.rsn_pairwise
             cmd = cmd + '   key_mgmt=%s\n' % ap.wpa_key_mgmt
             if cls.bgscan != '':
@@ -313,7 +299,7 @@ class Association(object):
         os.system('echo \'%s\' > %s' % (cmd, fileName))
 
     @classmethod
-    def associate_wpa(cls, sta, ap, wlan):
+    def associate_wpa(cls, sta, ap, wlan, ap_wlan):
         """ 
         Association when WPA
         
@@ -322,21 +308,21 @@ class Association(object):
         :param wlan: wlan ID
         """
         pidfile = "mn%d_%s_%s_wpa.pid" % (os.getpid(), sta.name, wlan)
-        cls.wpaFile(sta, ap, wlan)
+        cls.wpaFile(sta, ap, wlan, ap_wlan)
         debug("wpa_supplicant -B -Dnl80211 -P %s -i %s -c %s_%s.staconf\n"
               % (pidfile, sta.params['wlan'][wlan], sta.name, wlan))
         sta.pexec("wpa_supplicant -B -Dnl80211 -P %s -i %s -c %s_%s.staconf"
                   % (pidfile, sta.params['wlan'][wlan], sta.name, wlan))
 
     @classmethod
-    def handover_ieee80211r(cls, sta, ap, wlan):
+    def handover_ieee80211r(cls, sta, ap, wlan, ap_wlan):
         debug('wpa_cli -i %s roam %s\n' % (sta.params['wlan'][wlan],
-                                           ap.params['mac'][0]))
+                                           ap.params['mac'][ap_wlan]))
         sta.pexec('wpa_cli -i %s roam %s' % (sta.params['wlan'][wlan],
-                                             ap.params['mac'][0]))
+                                             ap.params['mac'][ap_wlan]))
 
     @classmethod
-    def associate_wep(cls, sta, ap, wlan):
+    def associate_wep(cls, sta, ap, wlan, ap_wlan):
         """ 
         Association when WEP
         
@@ -345,8 +331,8 @@ class Association(object):
         :param wlan: wlan ID
         """
         if 'passwd' not in sta.params:
-            passwd = ap.params['passwd'][0]
+            passwd = ap.params['passwd'][ap_wlan]
         else:
             passwd = sta.params['passwd'][wlan]
         sta.pexec('iw dev %s connect %s key d:0:%s' \
-                % (sta.params['wlan'][wlan], ap.params['ssid'][0], passwd))
+                % (sta.params['wlan'][wlan], ap.params['ssid'][ap_wlan], passwd))

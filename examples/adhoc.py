@@ -9,6 +9,7 @@ from mininet.net import Mininet
 from mininet.cli import CLI
 from mininet.log import setLogLevel
 
+
 def topology(autoTxPower):
     "Create a network."
     net = Mininet(enable_wmediumd=True, enable_interference=True)
@@ -23,7 +24,7 @@ def topology(autoTxPower):
         sta2 = net.addStation('sta2', position='50,10,0')
         sta3 = net.addStation('sta3', position='90,10,0')
 
-    net.propagationModel(model="logDistance", exp=4)
+    net.propagationModel(model="logDistance", exp=4.5)
 
     print "*** Configuring wifi nodes"
     net.configureWifiNodes()

@@ -58,6 +58,8 @@ import re
 import signal
 import select
 import fileinput
+import numpy as np
+from scipy.spatial.distance import pdist
 
 from subprocess import Popen, PIPE
 from time import sleep
@@ -285,7 +287,7 @@ class Node(object):
                  % (self.params['wlan'][wlan], ifbID))
         self.ifb.append(ifbID)
 
-    def getRange(self, intf=None, stationary=True, noiseLevel=0):
+    def getRange(self, intf=None, noiseLevel=0):
         "Get the Signal Range"
         enable_interference = WmediumdServerConn.interference_enabled
         wlan = self.params['wlan'].index(intf)
@@ -294,11 +296,21 @@ class Node(object):
         if not isinstance(self, Station) and not isinstance(self, Car) \
                 and not isinstance(self, AP):
             self = self.params['associatedTo'][0]
-        wlan = 0
         value = distanceByPropagationModel(self, wlan, enable_interference)
-        self.params['range'][wlan] = int(value.dist)
-        if not stationary:
-            self.updateGraph()
+
+        return int(value.dist)
+
+    def get_distance_to(self, dst):
+        """Get the distance between two nodes
+        :param self: source node
+        :param dst: destination node"""
+
+        pos_src = self.params['position']
+        pos_dst = dst.params['position']
+        points = np.array([(pos_src[0], pos_src[1], pos_src[2]),
+                           (pos_dst[0], pos_dst[1], pos_dst[2])])
+        dist = pdist(points)
+        return float("%.2f" % dist)
 
     def updateGraph(self):
         "Update the Graph"
@@ -554,7 +566,7 @@ class Node(object):
                 wlan = idx
                 break
         if 'position' in sta.params and 'position' in ap.params:
-            dist = wirelessLink.getDistance(sta, ap)
+            dist = sta.get_distance_to(ap)
         else:
             dist = 100000
         if dist < ap.params['range'][wlan] or 'position' not in sta.params \
@@ -593,14 +605,14 @@ class Node(object):
                  % (pidfile, self.params['wlan'][wlan],
                     wlan, ap.params['ssid'][0], passwd))
 
-    def associate_wep(self, ap, wlan):
+    def associate_wep(self, ap, wlan, sta_wlan=0, ap_wlan=0):
         "Association with WEP"
         if 'passwd' not in self.params:
-            passwd = ap.params['passwd'][0]
+            passwd = ap.params['passwd'][ap_wlan]
         else:
-            passwd = self.params['passwd'][wlan]
+            passwd = self.params['passwd'][sta_wlan]
         self.pexec('iw dev %s connect %s key d:0:%s' \
-                % (self.params['wlan'][wlan], ap.params['ssid'][0], passwd))
+                % (self.params['wlan'][sta_wlan], ap.params['ssid'][ap_wlan], passwd))
 
     def get_private_folder_manager(self):
         # type: () -> PrivateFolderManager
@@ -1466,10 +1478,11 @@ class AccessPoint(AP):
         """ Starting Access Point """
         cmd = ("echo \'")
 
-        if 'phywlan' not in ap.params:
-            cmd = cmd + ("interface=%s" % ap.params['wlan'][wlan])
-        else:
+        if 'phywlan' in ap.params and wlan == 0:
             cmd = cmd + ("interface=%s" % ap.params.get('phywlan'))
+        else:
+            cmd = cmd + ("interface=%s" % ap.params['wlan'][wlan])
+
         cmd = cmd + ("\ndriver=%s" % ap.params['driver'])
         cmd = cmd + ("\nssid=%s" % ap.params['ssid'][wlan])
         cmd = cmd + ('\nwds_sta=1')
@@ -1610,15 +1623,14 @@ class AccessPoint(AP):
 
     @classmethod
     def setIPMAC(cls, ap, wlan):
-        if 'phywlan' not in ap.params:
-            if ap.params['mac'][wlan] != '':
-                ap.setMAC(ap.params['mac'][wlan], ap.params['wlan'][wlan])
-            else:
-                ap.params['mac'][wlan] = \
-                    ap.getMAC(ap.params['wlan'][wlan])
-            cls.checkNetworkManager(ap.params['mac'][wlan])
-            if 'inNamespace' in ap.params and 'ip' in ap.params:
-                ap.setIP(ap.params['ip'], intf=ap.params['wlan'][wlan])
+        if ap.params['mac'][wlan] != '':
+            ap.setMAC(ap.params['mac'][wlan], ap.params['wlan'][wlan])
+        else:
+            ap.params['mac'][wlan] = \
+                ap.getMAC(ap.params['wlan'][wlan])
+        cls.checkNetworkManager(ap.params['mac'][wlan])
+        if 'inNamespace' in ap.params and 'ip' in ap.params:
+            ap.setIP(ap.params['ip'], intf=ap.params['wlan'][wlan])
 
     @classmethod
     def checkNetworkManager(cls, mac):
@@ -1667,13 +1679,13 @@ class AccessPoint(AP):
 
     @classmethod
     def APConfigFile(cls, cmd, ap, wlan):
-        """ run an Access Point and create the config file """
-        if 'phywlan' not in ap.params:
-            iface = ap.params['wlan'][wlan]
-        else:
+        "run an Access Point and create the config file"
+        if 'phywlan' in ap.params and wlan == 0:
             iface = ap.params['phywlan']
             ap.cmd('ip link set %s down' % iface)
             ap.cmd('ip link set %s up' % iface)
+        else:
+            iface = ap.params['wlan'][wlan]
         apconfname = "mn%d_%s.apconf" % (os.getpid(), iface)
         content = cmd + ("\' > %s" % apconfname)
         ap.cmd(content)
